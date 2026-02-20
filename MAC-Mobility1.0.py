@@ -28,6 +28,7 @@ VERSION = "V1.0"
 output_dir = f"MAC_Mobility_{VERSION}"
 if not os.path.exists(output_dir): os.makedirs(output_dir)
 
+# --- Define Spring Festival periods for distance-to-peak feature calculation ---
 SPRING_FESTIVAL_DATES = {
     2020: (pd.Timestamp('2020-01-10'), pd.Timestamp('2020-02-18')),
     2021: (pd.Timestamp('2021-01-28'), pd.Timestamp('2021-03-08')),
@@ -47,22 +48,37 @@ def get_dist_to_sf(date):
 # =================================================================
 # Load the training registry: LBS_Anchor_Aligned_Training_Data.csv
 # The input file must contain the following columns for reproducibility:
-# 1. date: Calendar date (YYYY-MM-DD) for holiday and seasonal feature extraction.
-# 2. BMI_adj: Adjusted Baidu Migration Index (Independent Variable/Feature).
-# 3. person_times_10k: Actual observed or anchor flow volumes (Target, Unit: 10,000).
-# 4. data_fidelity: Sample weights for dual-fidelity training 
-#    (e.g., Daily Ground-truth = 2.0, Monthly Anchors = 1.0).
+# 1. date: Calendar date (YYYY-MM-DD)
+# 2. BMI_adj: Adjusted Baidu Migration Index (Core Predictor)
+# 3. person_times_10k: Actual flow volumes (Target, Unit: 10,000)
+# 4. data_fidelity: Sample weights (e.g., Daily Ground-truth=2.0, Monthly Anchors=1.0)
 # =================================================================
 df = pd.read_csv('LBS_Anchor_Aligned_Training_Data.csv')
 
 # --- Feature Engineering ---
 df['date'] = pd.to_datetime(df['date'])
-df['is_festive'] = df['date'].apply(lambda x: 1 if calendar.is_holiday(x) else 0)
-df['dist_to_SF'] = df['date'].apply(get_dist_to_sf)
-df['month'] = df['date'].dt.month
-df['day_of_week'] = df['date'].dt.dayofweek
+day_of_week = df['date'].dt.dayofweek
 
-X = df[['BMI_adj', 'is_festive', 'dist_to_SF', 'month', 'day_of_week']]
+# Feature 1: BMI_adj (Pre-adjusted mobility index)
+
+# Feature 2: dist_to_SF (Days to Spring Festival peak)
+df['dist_to_SF'] = df['date'].apply(get_dist_to_sf)
+
+# Feature 3: is_festive (Statutory holidays)
+df['is_festive'] = df['date'].apply(lambda x: 1 if calendar.is_holiday(x) else 0)
+
+# Feature 4: is_normal_weekend (Regular Saturdays/Sundays without statutory shifts)
+df['is_normal_weekend'] = df.apply(lambda x: 1 if (x['date'].dayofweek >= 5 and calendar.is_holiday(x['date'])) else 0, axis=1)
+
+# Feature 5: is_extra_workday (Workday shifts/compensatory workdays)
+df['is_extra_workday'] = df.apply(lambda x: 1 if (x['date'].dayofweek < 5 and not calendar.is_workday(x['date'])) else 0, axis=1)
+
+# Feature 6: holiday_peak (Focusing on the BEGIN and END of major holidays like Golden Weeks)
+df['holiday_peak'] = df.apply(lambda x: 1 if (calendar.is_holiday(x['date']) and x['date'].dayofweek < 5) else 0, axis=1)
+
+features = ['BMI_adj', 'dist_to_SF', 'is_festive', 'is_normal_weekend', 'is_extra_workday', 'holiday_peak']
+
+X = df[features]
 y = df['person_times_10k']
 weights = df['data_fidelity'].values
 
@@ -84,7 +100,6 @@ best_r2 = -np.inf
 
 # --- Adaptive Model Tournament ---
 for name, model in models.items():
-    # Use log-transformation for target to handle long-tail distribution
     model.fit(X_train, np.log1p(y_train), sample_weight=w_train)
     y_pred = np.expm1(model.predict(X_test))
     
@@ -99,6 +114,7 @@ for name, model in models.items():
 
 print(f"MAC-Mobility {VERSION} Champion Model: {best_name} (R2: {best_r2:.4f})")
 
+# --- Export Champion Model ---
 joblib.dump(best_model, os.path.join(output_dir, f'MAC_Mobility_Core_{VERSION}.pkl'))
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
@@ -110,8 +126,8 @@ ax1.set_xlabel('Actual Flow (10k)')
 ax1.set_ylabel('Predicted Flow (10k)')
 
 importances = best_model.get_feature_importance() if best_name == "CatBoost" else best_model.feature_importances_
-sns.barplot(x=importances, y=X.columns, ax=ax2, palette='viridis')
-ax2.set_title('Feature Importance Analysis')
+sns.barplot(x=importances, y=features, ax=ax2, palette='viridis')
+ax2.set_title('Feature Importance Analysis (MAC-Mobility Features)')
 
 plt.tight_layout()
 plt.savefig(os.path.join(output_dir, f'Validation_Report_{VERSION}.png'), dpi=300)
