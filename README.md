@@ -26,7 +26,7 @@ The released data, calibration anchors, external-validation records, and data do
 | `Inflow_Share_Percent` | `迁入比例` or the first column containing `比例` |
 | `Outflow_Share_Percent` | `迁出比例` or the second column containing `比例` |
 
-The underlying Baidu source records are third-party products and are not redistributed in this repository.
+The underlying Baidu source records are not redistributed in this repository.
 
 ## Installation
 
